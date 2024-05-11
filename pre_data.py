@@ -5,8 +5,18 @@ import dashscope
 import random
 from http import HTTPStatus
 import hanlp
+from xpinyin import Pinyin
+from shutil import copyfile
 
+p = Pinyin()
 dashscope.api_key = 'sk-0793fab51dbd44f1a3dbf2e0541990f9'
+
+def is_json(myjson):
+    try:
+        json.loads(myjson)
+    except ValueError:
+        return False
+    return True
 
 # 将pdf文件夹中的pdf文件转换为txt文件
 def pdf_to_txt(pdf_folder, txt_folder):
@@ -20,16 +30,16 @@ def pdf_to_txt(pdf_folder, txt_folder):
             os.makedirs(txt_folder)
         with open(pdf_path, 'rb') as pdf_file:
             pdf_reader = PyPDF2.PdfReader(pdf_file)
-            with open(txt_path, 'w') as txt_file:
+            with open(txt_path, 'w', encoding='utf-8') as txt_file:
                 for page_num in range(len(pdf_reader.pages)):
                     page = pdf_reader.pages[page_num]
                     txt_file.write(page.extract_text())
 
 # 进行一步简单的预处理：去除空行，去除多余空格
 def format_files(txt_file):
-    with open(txt_file, 'r') as file:
+    with open(txt_file, 'r', encoding='utf-8') as file:
         lines = file.readlines()
-    with open(txt_file, 'w') as file:
+    with open(txt_file, 'w', encoding='utf-8') as file:
         for line in lines:
             line = line.strip()
             if line:
@@ -54,26 +64,31 @@ def classify_files(data_folder):
     for data_file in data_files:
         if not data_file.endswith('.txt'):
             continue
-        with open(data_folder + data_file, 'r') as file:
+        with open(data_folder + data_file, 'r', encoding='utf-8') as file:
             content = file.read()
         messages = [
-            {'role': 'user', 'content': f'你是一名文章分类员，请你对下面的文章进行分类：{content}\n你可以使用的类别有：{categories}，你只需要直接回答我类别即可，如：{categories[0]}。如果你不知道该如何分类，可以回答“不知道”'},]
+            {'role': 'user', 'content': f'你是一名文章分类员，请你对下面的文章进行分类：{content}\n你可以使用的类别有：{categories}，你只需要直接回答我类别即可，注意类别一定要用双引号\"\"包裹，不论一个文件同时符合一个还是多个分类，请务必在[]内返回所有分类，如：[\"{categories[0]}\"]，[\"{categories[0]}\", \"{categories[1]}\"]。如果你不知道该如何分类，可以回答[\"未知\"]'},]
         response = dashscope.Generation.call(
-            'qwen1.5-14b-chat',
+            'qwen1.5-32b-chat',
             messages=messages,
             seed=random.randint(1, 10000),
             result_format='text',
         )
         res = json.loads(str(response))['output']['text']
         if response.status_code == HTTPStatus.OK:
-            if res not in categories and res != '不知道':
-                print(f'分类错误：{res}')
-                continue
-            if res == '不知道':
-                res = '未知'
-            if not os.path.exists(data_folder + res):
-                os.mkdir(data_folder + res)
-            os.rename(data_folder + data_file, data_folder + res + '/' + data_file)
+            if not is_json(res):
+                print(f'分类错误 {res}')
+                res = ['未知']
+            else:
+                res = json.loads(res)
+            if type(res) != list or any([x not in categories and x != '未知' for x in res]):
+                print(f'分类错误 {type(res)}: {res}')
+                res = ['未知']
+            for category in res:
+                if not os.path.exists(data_folder + p.get_pinyin(category,'')):
+                    os.mkdir(data_folder + p.get_pinyin(category,''))
+                copyfile(data_folder + data_file, data_folder + p.get_pinyin(category,'') + '/' + data_file)
+            os.remove(data_folder + data_file)
         else:
             print('Request id: %s, Status code: %s, error code: %s, error message: %s' % (
                 response.request_id, response.status_code,
@@ -88,7 +103,7 @@ def pre_process(data_folder):
     for filepath, dirnames, filenames in os.walk(data_folder):
         for filename in filenames:
             file = os.path.join(filepath, filename)
-            with open(file, 'r') as f:
+            with open(file, 'r', encoding='utf-8') as f:
                 content = f.read()
             res = pos(content, tasks='pos/pku')
             for i in range(len(res['tok/fine'])):
@@ -98,7 +113,7 @@ def pre_process(data_folder):
             file = file.replace(data_folder, 'datas/')
             if not os.path.exists(os.path.dirname(file)):
                 os.makedirs(os.path.dirname(file))
-            with open(file, 'w') as f:
+            with open(file, 'w', encoding='utf-8') as f:
                 f.write(res)
 
 if __name__ == '__main__':
