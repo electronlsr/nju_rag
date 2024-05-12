@@ -5,11 +5,13 @@ from xpinyin import Pinyin
 import dashscope
 from http import HTTPStatus
 import random
+import os
 
 collection_name = "test_collection"
 EMBEDDING_DEVICE = "cuda"
 dashscope.api_key = 'sk-0793fab51dbd44f1a3dbf2e0541990f9'
 p = Pinyin()
+limit = 2
 
 client = MilvusClient(
     uri="http://114.212.97.40:19530",
@@ -39,11 +41,11 @@ def partition_search(query):
             return general_search(query)
         else:
             res = json.loads(res)
-        if type(res) != list or any([x not in categories and x != '未知' for x in res]):
+        if type(res) != list or any([x not in categories for x in res]):
             return general_search(query)
         embeddings = HuggingFaceEmbeddings(model_name="./m3e-base", model_kwargs={'device': EMBEDDING_DEVICE})
         embedding = embeddings.embed_documents([query])
-        results = client.search(collection_name=collection_name, data=embedding, limit=3, search_params={"metric_type": "COSINE", "params": {}}, output_fields=["file_path"], partition_names=[p.get_pinyin(category,'') for category in res])
+        results = client.search(collection_name=collection_name, data=embedding, limit=limit, search_params={"metric_type": "COSINE", "params": {}}, output_fields=["file_path"], partition_names=[p.get_pinyin(category,'') for category in res])
         return [result['entity']['file_path'].replace('datas','txts') for result in results[0]]
     else:
         print('Request id: %s, Status code: %s, error code: %s, error message: %s' % (
@@ -54,7 +56,7 @@ def partition_search(query):
 def general_search(query):
     embeddings = HuggingFaceEmbeddings(model_name="./m3e-base", model_kwargs={'device': EMBEDDING_DEVICE})
     embedding = embeddings.embed_documents([query])
-    results = client.search(collection_name=collection_name, data=embedding, limit=3, search_params={"metric_type": "COSINE", "params": {}}, output_fields=["file_path"])
+    results = client.search(collection_name=collection_name, data=embedding, limit=limit, search_params={"metric_type": "COSINE", "params": {}}, output_fields=["file_path"])
     return [result['entity']['file_path'].replace('datas','txts') for result in results[0]]
 
 def final_work(files, query):
@@ -64,20 +66,34 @@ def final_work(files, query):
             files_content += f.read()
     messages = [
         {'role': 'user', 'content': f'{files_content}\n请你依据以上所有内容回答这个问题：{query}\n如果以上内容无法确定答案，请回答"对不起，我不知道这个问题的答案。"，不要回答未提供的内容。'},]
-    response = dashscope.Generation.call(
+    responses = dashscope.Generation.call(
         'qwen1.5-32b-chat',
         messages=messages,
         seed=random.randint(1, 10000),
         result_format='text',
+        stream=True,
+        output_in_full=False,
     )
-    res = json.loads(str(response))['output']['text']
-    if response.status_code == HTTPStatus.OK:
-        return res
-    else:
-        print('Request id: %s, Status code: %s, error code: %s, error message: %s' % (
-            response.request_id, response.status_code,
-            response.code, response.message
-        ))
+    res = ''
+    for response in responses:
+        if response.status_code == HTTPStatus.OK:
+            print(json.loads(str(response))['output']['text'], end='')
+            res += json.loads(str(response))['output']['text']
+        else:
+            print('Request id: %s, Status code: %s, error code: %s, error message: %s' % (
+                response.request_id, response.status_code,
+                response.code, response.message
+            ))
+    if res.find('对不起，我不知道这个问题的答案。') != -1:
+        return ''
+    res = '\nSOURCE: '
+    with open('relations.json', 'r', encoding='utf-8') as file:
+        relations = json.load(file)
+    for file in files:
+        fname = os.path.basename(file).split('.')[0]
+        if fname in relations.keys():
+            res += f'[{fname}]({relations[fname]})\n'
+    return res
 
 if __name__ == '__main__':
     query = input("请输入问题：")
