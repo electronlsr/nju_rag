@@ -7,9 +7,11 @@ from http import HTTPStatus
 import hanlp
 from xpinyin import Pinyin
 from shutil import copyfile
+from time import sleep
 
 p = Pinyin()
 dashscope.api_key = 'sk-0793fab51dbd44f1a3dbf2e0541990f9'
+slice_size = 9000
 
 def is_json(myjson):
     try:
@@ -36,7 +38,7 @@ def pdf_to_txt(pdf_folder, txt_folder):
                     txt_file.write(page.extract_text())
 
 # 进行一步简单的预处理：去除空行，去除多余空格
-def format_files(txt_file):
+def format_files(txt_file, relations_file):
     with open(txt_file, 'r', encoding='utf-8') as file:
         lines = file.readlines()
     with open(txt_file, 'w', encoding='utf-8') as file:
@@ -44,6 +46,20 @@ def format_files(txt_file):
             line = line.strip()
             if line:
                 file.write(line + '\n')
+    with open(txt_file, 'r', encoding='utf-8') as file:
+        content = file.read()
+    if len(content) > slice_size:
+        with open(relations_file, 'r', encoding='utf-8') as file:
+            relations = json.load(file)
+        slices = [content[i:i+slice_size] for i in range(0, len(content), slice_size)]
+        for i, slice in enumerate(slices):
+            with open(txt_file[:-4] + f'_{i}.txt', 'w', encoding='utf-8') as file:
+                file.write(slice)
+            relations[os.path.basename(txt_file[:-4]) + f'_{i}'] = relations[os.path.basename(txt_file[:-4])]
+        os.remove(txt_file)
+        with open(relations_file, 'w', encoding='utf-8') as file:
+            json.dump(relations, file, ensure_ascii=False)
+            
 
 # 将一个左边一列是文件名（无后缀）、右边一列是来源的csv文件转换成字典并存入relations.json
 def csv_to_json(csv_file):
@@ -68,12 +84,22 @@ def classify_files(data_folder):
             content = file.read()
         messages = [
             {'role': 'user', 'content': f'你是一名文章分类员，请你对下面的文章进行分类：{content}\n你可以使用的类别有：{categories}，你只需要直接回答我类别即可，注意类别一定要用双引号\"\"包裹，不论一个文件同时符合一个还是多个分类，请务必在[]内返回所有分类，如：[\"{categories[0]}\"]，[\"{categories[0]}\", \"{categories[1]}\"]。如果你不知道该如何分类，可以回答[\"未知\"]'},]
+        sleep(10)
         response = dashscope.Generation.call(
             'qwen1.5-32b-chat',
             messages=messages,
             seed=random.randint(1, 10000),
             result_format='text',
         )
+        try:
+            json.loads(str(response))['output']['text']
+        except:
+            print(f'分类错误 {str(response)}')
+            if not os.path.exists(data_folder + "weizhi"):
+                os.mkdir(data_folder + "weizhi")
+            copyfile(data_folder + data_file, data_folder + "weizhi" + '/' + data_file)
+            os.remove(data_folder + data_file)
+            continue
         res = json.loads(str(response))['output']['text']
         if response.status_code == HTTPStatus.OK:
             if not is_json(res):
@@ -117,10 +143,10 @@ def pre_process(data_folder):
                 f.write(res)
 
 if __name__ == '__main__':
-    pdf_to_txt('pdfs/', 'txts/')
-    for file in os.listdir('txts/'):
-        if file.endswith('.txt'):
-            format_files('txts/' + file)
-    csv_to_json('relations.csv')
-    classify_files('txts/')
+    # csv_to_json('relations.csv')
+    # pdf_to_txt('pdfs/', 'txts/')
+    # for file in os.listdir('txts/'):
+    #     if file.endswith('.txt'):
+    #         format_files('txts/' + file, 'relations.json')
+    # classify_files('txts/')
     pre_process('txts/')
